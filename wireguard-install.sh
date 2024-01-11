@@ -123,15 +123,11 @@ function installQuestions() {
         read -rp "Public interface: " -e -i "${SERVER_NIC}" SERVER_PUB_NIC
     done
 
-    until [[ ${SERVER_WG_NIC} =~ ^[a-zA-Z0-9_]+$ && ${#SERVER_WG_NIC} -lt 16 ]]; do
-        read -rp "WireGuard interface name: " -e -i wg0 SERVER_WG_NIC
-    done
-
-    until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3}\/[0-9]{1,2} ]]; do
+    until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2} ]]; do
         read -rp "Server WireGuard IPv4: " -e -i 10.66.66.1/32 SERVER_WG_IPV4
     done
 
-    until [[ ${SERVER_WG_IPV6} =~ ^([a-f0-9]{1,4}:){3,4}:\/[0-9]{1,3} ]]; do
+    until [[ ${SERVER_WG_IPV6} =~ ^([a-f0-9]{1,4}:){3,4}:[a-f0-9]{1,4}/[0-9]{1,3} ]]; do
         read -rp "Server WireGuard IPv6: " -e -i fd42:42:42::1/128 SERVER_WG_IPV6
     done
 
@@ -212,7 +208,7 @@ SERVER_WG_IPV6=${SERVER_WG_IPV6}
 SERVER_PORT=${SERVER_PORT}
 SERVER_PRIV_KEY=${SERVER_PRIV_KEY}
 SERVER_PUB_KEY=${SERVER_PUB_KEY}
-ALLOWED_IPS=${ALLOWED_IPS}" >/etc/wireguard/params
+ALLOWED_IPS=${ALLOWED_IPS}" > ${PARAMS_FILE}
 
     # Add server interface
     echo "[Interface]
@@ -506,9 +502,18 @@ function manageMenu() {
 # Check for root, virt, OS...
 initialCheck
 
+#Choose WireGuard interface name
+echo "Existing wireGuard interface names:"
+test -d /etc/wireguard/ && find /etc/wireguard/ -printf "%f\n" | sed -rn "s,([^.]+)\.conf$,\1,p"
+until [[ ${SERVER_WG_NIC} =~ ^[a-zA-Z0-9_]+$ && ${#SERVER_WG_NIC} -lt 16 ]]; do
+    read -rp "WireGuard interface name: " -e -i wg0 SERVER_WG_NIC
+done
+
+PARAMS_FILE=/etc/wireguard/params_${SERVER_WG_NIC}
+
 # Check if WireGuard is already installed and load params
-if [[ -e /etc/wireguard/params ]]; then
-    source /etc/wireguard/params
+if [[ -e ${PARAMS_FILE} ]]; then
+    source ${PARAMS_FILE}
     manageMenu
 else
     installWireGuard
