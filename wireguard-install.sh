@@ -123,12 +123,12 @@ function installQuestions() {
         read -rp "Public interface: " -e -i "${SERVER_NIC}" SERVER_PUB_NIC
     done
 
-    until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2} ]]; do
-        read -rp "Server WireGuard IPv4: " -e -i 10.66.66.1/32 SERVER_WG_IPV4
+    until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3} ]]; do
+        read -rp "Server WireGuard IPv4: " -e -i 10.66.66.1 SERVER_WG_IPV4
     done
 
-    until [[ ${SERVER_WG_IPV6} =~ ^([a-f0-9]{1,4}:){3,4}:[a-f0-9]{1,4}/[0-9]{1,3} ]]; do
-        read -rp "Server WireGuard IPv6: " -e -i fd42:42:42::1/128 SERVER_WG_IPV6
+    until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2} ]]; do
+        read -rp "Server WireGuard IPv6: " -e -i fd42:42:42::1 SERVER_WG_IPV6
     done
 
     # Generate random number within private ports range
@@ -144,6 +144,8 @@ function installQuestions() {
             ALLOWED_IPS="0.0.0.0/0,::/0"
         fi
     done
+
+    read -n1 -rp "Configure firewall? [y/N]: " -e CONFIG_FIREWALL
 
     echo ""
     echo "Okay, that was all I needed. We are ready to setup your WireGuard server now."
@@ -216,6 +218,7 @@ Address = ${SERVER_WG_IPV4}/24,${SERVER_WG_IPV6}/64
 ListenPort = ${SERVER_PORT}
 PrivateKey = ${SERVER_PRIV_KEY}" >"/etc/wireguard/${SERVER_WG_NIC}.conf"
 
+if [[ $CONFIG_FIREWALL =~ ^[yY]+$ ]]; then
     if pgrep firewalld; then
         FIREWALLD_IPV4_ADDRESS=$(echo "${SERVER_WG_IPV4}" | cut -d"." -f1-3)".0"
         FIREWALLD_IPV6_ADDRESS=$(echo "${SERVER_WG_IPV6}" | sed 's/:[^:]*$/:0/')
@@ -235,6 +238,7 @@ PostDown = iptables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE
 PostDown = ip6tables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
 PostDown = ip6tables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
     fi
+fi
 
     # Enable routing on the server
     echo "net.ipv4.ip_forward = 1
@@ -242,8 +246,10 @@ net.ipv6.conf.all.forwarding = 1" >/etc/sysctl.d/wg.conf
 
     sysctl --system
 
-    systemctl start "wg-quick@${SERVER_WG_NIC}"
-    systemctl enable "wg-quick@${SERVER_WG_NIC}"
+    echo "You must run:
+    systemctl start wg-quick@${SERVER_WG_NIC}
+    systemctl enable wg-quick@${SERVER_WG_NIC}
+    to up tunnel and enable it on autostart"
 
     newClient
     echo -e "${GREEN}If you want to add more clients, you simply need to run this script another time!${NC}"
@@ -306,7 +312,7 @@ function newClient() {
     until [[ ${IPV4_EXISTS} == '0' ]]; do
         read -rp "Client WireGuard IPv4: ${BASE_IP}." -e -i "${DOT_IP}" DOT_IP
         CLIENT_WG_IPV4="${BASE_IP}.${DOT_IP}"
-        IPV4_EXISTS=$(grep -c "$CLIENT_WG_IPV4" "/etc/wireguard/${SERVER_WG_NIC}.conf")
+        IPV4_EXISTS=$(grep -c "${CLIENT_WG_IPV4}/32" "/etc/wireguard/${SERVER_WG_NIC}.conf")
 
         if [[ ${IPV4_EXISTS} != 0 ]]; then
             echo ""
@@ -338,7 +344,7 @@ function newClient() {
     # Create client file and add the server as a peer
     echo "[Interface]
 PrivateKey = ${CLIENT_PRIV_KEY}
-Address = ${CLIENT_WG_IPV4},${CLIENT_WG_IPV6}
+Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128
 
 [Peer]
 PublicKey = ${SERVER_PUB_KEY}
@@ -351,7 +357,7 @@ AllowedIPs = ${ALLOWED_IPS}" >"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME
 [Peer]
 PublicKey = ${CLIENT_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
-AllowedIPs = ${CLIENT_WG_IPV4},${CLIENT_WG_IPV6}" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+AllowedIPs = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 
     wg syncconf "${SERVER_WG_NIC}" <(wg-quick strip "${SERVER_WG_NIC}")
 
@@ -504,7 +510,9 @@ initialCheck
 
 #Choose WireGuard interface name
 echo "Existing wireGuard interface names:"
-test -d /etc/wireguard/ && find /etc/wireguard/ -printf "%f\n" | sed -rn "s,([^.]+)\.conf$,\1,p"
+if [[ -d /etc/wireguard/ ]]; then
+    find /etc/wireguard/ -printf "%f\n" | sed -rn "s,([^.]+)\.conf$,\1,p"
+fi
 until [[ ${SERVER_WG_NIC} =~ ^[a-zA-Z0-9_]+$ && ${#SERVER_WG_NIC} -lt 16 ]]; do
     read -rp "WireGuard interface name: " -e -i wg0 SERVER_WG_NIC
 done
