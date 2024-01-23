@@ -109,8 +109,12 @@ function installQuestions() {
     echo "You can keep the default options and just press enter if you are ok with them."
     echo ""
 
+
     # Detect public IPv4 or IPv6 address and pre-fill for the user
-    SERVER_PUB_IP=$(ip -4 addr | sed -ne 's|^.* inet \([^/]*\)/.* scope global.*$|\1|p' | awk '{print $1}' | head -1)
+    SERVER_PUB_IP=$(curl -s https://ipinfo.io/ip)
+    if [[ -z ${SERVER_PUB_IP} ]]; then
+        SERVER_PUB_IP=$(ip -4 addr | sed -ne 's|^.* inet \([^/]*\)/.* scope global.*$|\1|p' | awk '{print $1}' | head -1)
+    fi
     if [[ -z ${SERVER_PUB_IP} ]]; then
         # Detect public IPv6 address
         SERVER_PUB_IP=$(ip -6 addr | sed -ne 's|^.* inet6 \([^/]*\)/.* scope global.*$|\1|p' | head -1)
@@ -333,6 +337,21 @@ function newClient() {
             echo ""
         fi
     done
+    # Adguard DNS by default
+    until [[ ${CLIENT_DNS_1} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
+           read -rp "First DNS resolver to use for the client: " -e -i 1.1.1.1 CLIENT_DNS_1
+           if [[ -z ${CLIENT_DNS_1} ]]; then
+               break
+           fi
+    done
+    if [[ -n ${CLIENT_DNS_1} ]]; then
+        until [[ ${CLIENT_DNS_2} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
+                read -rp "Second DNS resolver to use for the client (optional): " -e -i 1.0.0.1 CLIENT_DNS_2
+                if [[ ${CLIENT_DNS_2} == "" ]]; then
+                        CLIENT_DNS_2="${CLIENT_DNS_1}"
+                fi
+        done
+    fi
 
     # Generate key pair for the client
     CLIENT_PRIV_KEY=$(wg genkey)
@@ -344,13 +363,16 @@ function newClient() {
     # Create client file and add the server as a peer
     echo "[Interface]
 PrivateKey = ${CLIENT_PRIV_KEY}
-Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128
-
+Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128" > "${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
+    if [[ -n ${CLIENT_DNS_1} ]]; then
+        echo "DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}" >> "${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
+    fi
+echo -e "\n
 [Peer]
 PublicKey = ${SERVER_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
-AllowedIPs = ${ALLOWED_IPS}" >"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
+AllowedIPs = ${ALLOWED_IPS}" >> "${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
 
     # Add the client as a peer to the server
     echo -e "\n### Client ${CLIENT_NAME}
@@ -379,7 +401,28 @@ function listClients() {
         exit 1
     fi
 
+    echo ""
+    echo "Select the existing client you want to generate qrcode"
     grep -E "^### Client" "/etc/wireguard/${SERVER_WG_NIC}.conf" | cut -d ' ' -f 3 | nl -s ') '
+    until [[ ${CLIENT_NUMBER} -ge 1 && ${CLIENT_NUMBER} -le ${NUMBER_OF_CLIENTS} ]]; do
+        if [[ ${CLIENT_NUMBER} == '1' ]]; then
+            read -rp "Select one client [1]: " CLIENT_NUMBER
+        else
+            read -rp "Select one client [1-${NUMBER_OF_CLIENTS}]: " CLIENT_NUMBER
+        fi
+    done
+
+    # match the selected number to a client name
+    CLIENT_NAME=$(grep -E "^### Client" "/etc/wireguard/${SERVER_WG_NIC}.conf" | cut -d ' ' -f 3 | sed -n "${CLIENT_NUMBER}"p)
+    HOME_DIR=$(getHomeDirForClient "${CLIENT_NAME}")
+    # Generate QR code if qrencode is installed
+    if command -v qrencode &>/dev/null; then
+        echo -e "${GREEN}\nHere is your client config file as a QR Code:\n${NC}"
+        qrencode -t ansiutf8 -l L <"${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf"
+        echo ""
+    fi
+
+    echo -e "${GREEN}Your client config file is in ${HOME_DIR}/${SERVER_WG_NIC}-client-${CLIENT_NAME}.conf${NC}"
 }
 
 function revokeClient() {
@@ -479,7 +522,7 @@ function manageMenu() {
     echo ""
     echo "What do you want to do?"
     echo "   1) Add a new user"
-    echo "   2) List all users"
+    echo "   2) List all users and generate qrcode"
     echo "   3) Revoke existing user"
     echo "   4) Uninstall WireGuard"
     echo "   5) Exit"
@@ -508,14 +551,19 @@ function manageMenu() {
 # Check for root, virt, OS...
 initialCheck
 
-#Choose WireGuard interface name
-echo "Existing wireGuard interface names:"
-if [[ -d /etc/wireguard/ ]]; then
-    find /etc/wireguard/ -printf "%f\n" | sed -rn "s,([^.]+)\.conf$,\1,p"
+[[ -n $1 ]] && SERVER_WG_NIC=$1
+
+if [[ -z ${SERVER_WG_NIC} ]]; then
+    #Choose WireGuard interface name
+    echo "Existing wireGuard interface names:"
+    if [[ -d /etc/wireguard/ ]]; then
+        find /etc/wireguard/ -printf "%f\n" | sed -rn "s/([^.]+)\.conf$/\1/p"
+    fi
 fi
 until [[ ${SERVER_WG_NIC} =~ ^[a-zA-Z0-9_]+$ && ${#SERVER_WG_NIC} -lt 16 ]]; do
     read -rp "WireGuard interface name: " -e -i wg0 SERVER_WG_NIC
 done
+
 
 PARAMS_FILE=/etc/wireguard/params_${SERVER_WG_NIC}
 
